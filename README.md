@@ -3,6 +3,19 @@
 > ChatGPT thinks. Codex works.
 > ChatGPT 负责思考，Codex 负责干活。
 
+> [!NOTE]
+> **Fork attribution · Fork 来源说明** — This repository is a fork of
+> [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt).
+> It preserves the upstream commit history and MIT License. The original project
+> and upstream implementation come from the original author and contributors;
+> this fork maintains a small set of reliability and Windows compatibility
+> changes whose authorship remains visible in the Git history.
+>
+> 本仓库 Fork 自
+> [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)，
+> 完整保留上游提交历史和 MIT License。原项目及上游实现来源于原作者和贡献者；
+> 本 Fork 仅维护可靠性与 Windows 兼容性方面的增量修改，具体贡献者以 Git 提交记录为准。
+
 > [!IMPORTANT]
 > **遇到问题？** 请先向 Codex 发送 **「更新 Codex with ChatGPT」** 并重试。更新到最新版本可以解决大多数已知问题。  
 > **Having trouble?** First ask Codex to **“Update Codex with ChatGPT”** and try again. Updating to the latest version resolves most known issues.
@@ -86,10 +99,12 @@ I am a non-technical user — do everything yourself:
 ```
 
 
-**Updates · 更新** — The Skill checks GitHub once a day and updates itself when a
-new version is released; no action needed. You can also say "更新 Codex with ChatGPT"
-anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新，无需任何操作；
-也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**Updates · 更新** — The Skill checks GitHub once when each new top-level C2C
+instruction starts. It never checks or updates in the middle of an active task,
+including iterations, resume, or repair. You can also explicitly say
+"更新 Codex with ChatGPT" anytime. / Skill 仅在每条新的顶层 C2C 指令开始时检查
+一次更新；任务执行、迭代、恢复或修复过程中不会检查或更新。也可以随时明确要求
+Codex「更新 Codex with ChatGPT」。
 
 ---
 

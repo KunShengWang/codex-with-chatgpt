@@ -4,6 +4,12 @@
 
 > ChatGPT 负责思考，Codex 负责干活。
 
+> [!NOTE]
+> **Fork 来源说明**：本仓库 Fork 自
+> [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)，
+> 完整保留上游提交历史和 MIT License。原项目及上游实现来源于原作者和贡献者；
+> 本 Fork 仅维护可靠性与 Windows 兼容性方面的增量修改，具体贡献者以 Git 提交记录为准。
+
 ## 解决什么问题
 
 ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的 API 额度做
@@ -42,8 +48,9 @@ Agent（Codex），然后去倒杯咖啡：
    Tunnel、端口这些词，不要向我解释；出了问题先自己修。
 ```
 
-**更新**：Skill 每天自动检查一次 GitHub，有新版本会自动更新并继续任务，
-无需任何操作；也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**更新**：Skill 仅在每条新的顶层 C2C 指令开始时检查一次 GitHub。任务执行、
+多轮迭代、恢复或修复过程中不会检查或更新；也可以随时明确要求 Codex
+「更新 Codex with ChatGPT」。
 
 ## 安装 → 配置 → 使用（手动版）
 
