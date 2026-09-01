@@ -44,7 +44,14 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
     return new Promise<string>((resolve, reject) => {
       const child = spawn(
         bin,
-        ["tunnel", "--url", `http://127.0.0.1:${localPort}`, "--no-autoupdate"],
+        [
+          "tunnel",
+          "--url",
+          `http://127.0.0.1:${localPort}`,
+          "--no-autoupdate",
+          "--protocol",
+          "http2",
+        ],
         { stdio: ["ignore", "pipe", "pipe"] }
       );
       this.child = child;
