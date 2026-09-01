@@ -167,10 +167,15 @@ that close the tab, hide the window, or stall on the settings page.
 
 Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
 
-- Before typing or sending, inspect the current same-tab DOM once. After an
-  attempted send, if the exact control text/`TASK_ID` + `ITERATION` marker is
-  already a user message, or the composer is empty and a new assistant
-  response/`停止回答` control is present, treat it as submitted; do not resend.
+- Before typing or sending, inspect the current same-tab DOM once and retain a
+  small baseline: whether the exact control marker already exists, whether the
+  composer is empty, and whether an assistant response/`停止回答` control is
+  already active. After an attempted send, treat it as submitted only when
+  either (a) the exact control text/`TASK_ID` + `ITERATION` marker is now a user
+  message, or (b) the composer cleared and assistant generation became active
+  after the attempted action when it was not active in the baseline. Existing
+  generation from an earlier turn is not proof. Do not resend after either
+  submitted signal.
 - Fill the existing composer in one action, then run one cheap
   `dom_cua.get_visible_dom()` check. Use only the current DOM node/locator;
   never reuse a node id or locator captured before a timeout.
@@ -182,22 +187,30 @@ Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
   click another control. Wait in short browser slices of at most 10 seconds,
   then take one fresh DOM check. A 20–30 second browser wait can itself hit
   the browser tool's roughly 30-second boundary.
-- A click, keypress, or browser timeout is inconclusive. Rebind the same
-  browser, relist tabs, retrieve the current tab, mark it for handoff, and
-  inspect fresh DOM. If the exact message is now in the conversation or the
-  composer has cleared with an assistant response active, treat it as sent.
+- A click, keypress, or browser timeout is inconclusive. Keep the existing
+  `iab` browser binding. If the tab binding is stale, discard only that tab
+  binding and obtain the same ChatGPT tab again from the existing `iab`
+  binding; do not call `agent.browsers.get*` unless the browser explicitly
+  reports that it disconnected. Mark the recovered tab for handoff and inspect
+  fresh DOM against the pre-send baseline. If either submitted signal above is
+  now present, treat it as sent.
   Only if a fresh DOM proves the exact draft is still present, no assistant
   response is active, and a current enabled `发送提示` control is visible may
   one retry be made. Do not loop.
-- Set `EXECUTED_SENT` only after observing that the message left the composer
-  and entered the conversation; a successful browser-call return alone is
-  not proof. If the state remains ambiguous, keep `EXECUTED_LOCAL` and report
-  the route problem rather than sending again.
+- Promote a local checkpoint to its sent state only after observing one of the
+  submitted signals above; a successful browser-call return alone is not
+  proof. If the state remains ambiguous, keep the local pending phase
+  (`INIT` with `waitingFor=none`, or `EXECUTED_LOCAL`) and report the route
+  problem rather than sending again.
 - If controls remain stuck, a same-URL reload of that tab is allowed once
-  after `markHandoff()`. After reload, inspect the conversation for the exact
-  message before refilling the composer: reload can complete a pending send
-  or clear the draft. Do not create a new chat or repair the connector for
-  this symptom when `c2c doctor` is healthy.
+  after `markHandoff()`. After reload, wait in short slices until the current
+  chat history and composer are visibly loaded, then inspect for the exact
+  message. Reload can complete a pending send or clear the draft. If it clears
+  the draft without producing a submitted signal, keep the state ambiguous and
+  do not refill automatically. A retry remains allowed only when a stable fresh
+  DOM still contains the exact draft and satisfies the one-retry rule above.
+  Do not create a new chat or repair the connector for this symptom when
+  `c2c doctor` is healthy.
 
 ## Locations
 
@@ -210,24 +223,42 @@ Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
   `corepack pnpm install && corepack pnpm build` inside it.
 - Always pass `-w <workspace root>` (the project the user is working on, NOT the c2c repo).
 
-## Daily update check
+## Update check boundary (once per new user instruction)
 
-At the START of every workflow below (before anything else), run these two
-commands (both are cheap / cached; never mention them unless an update exists):
+Run `c2c update-check --json` only once when a NEW top-level user instruction
+first invokes a C2C workflow, before the first C2C action for that instruction.
+Also run `c2c sandbox-allow --json` at that same entry boundary. Treat the
+whole INIT → PLAN → EXECUTED → REVIEW loop as one instruction, even when it
+spans many turns or context compactions.
 
-1. `c2c update-check --json`
-2. `c2c sandbox-allow --json` — writes the C2C state directory into Codex's
-   sandbox `writable_roots` (macOS: `~/Library/Application Support/codex-with-chatgpt`;
-   Windows: `%LOCALAPPDATA%\codex-with-chatgpt`; config file is
-   `~/.codex/config.toml` on both, or `%USERPROFILE%\.codex\config.toml` on Windows).
-   If already allowlisted, this is a no-op and does not trigger elevation.
+Do NOT check for updates again while that instruction is active. In particular,
+skip `update-check` during PLAN/EXECUTED iterations, checkpoint resume, automatic
+continuations, browser timeout recovery, doctor-triggered repair/reconnect, or
+after short user continuation replies such as「继续」「好了」, an approval answer,
+login completion, status request, or clarification. The same active C2C
+`TASK_ID` always belongs to the same instruction. If it is unclear whether the
+active instruction was already checked, skip the check rather than interrupt
+work. A genuinely new user goal that starts a new C2C task gets one new check.
+
+`sandbox-allow` writes the C2C state directory into Codex's sandbox
+`writable_roots` (macOS: `~/Library/Application Support/codex-with-chatgpt`;
+Windows: `%LOCALAPPDATA%\codex-with-chatgpt`; config file is
+`~/.codex/config.toml` on both, or `%USERPROFILE%\.codex\config.toml` on Windows).
+If already allowlisted, it is a no-op and does not trigger elevation. A repair
+may still run `sandbox-allow` when an actual sandbox/state-dir error requires it;
+that exception does not authorize another update check.
 
 - `{ "updateAvailable": false }` → continue silently. Never mention the check.
 - `{ "updateAvailable": true }` → tell the user one line:
   "检测到 Codex with ChatGPT 有新版本，我先更新一下（约 1 分钟），随后继续你的任务。"
-  Then run the update workflow below, and CONTINUE the original task afterwards.
+  Then run the update workflow below before starting the new instruction, and
+  CONTINUE that instruction afterwards. Never start an automatic update after
+  INIT has been sent or while an existing C2C checkpoint/task is in progress.
 
-## Workflow: update（"更新 Codex with ChatGPT"，or triggered by the daily check）
+If the user explicitly asks to update Codex with ChatGPT, run **Workflow:
+update** directly; that explicit maintenance request is not a background check.
+
+## Workflow: update（"更新 Codex with ChatGPT"，or triggered at the new-instruction boundary）
 
 Inside the checkout directory (see Locations):
 
@@ -524,7 +555,9 @@ no 40-step epics. Use C2C control messages.
 
 Protocol states sent to ChatGPT: INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED).
 Local checkpoint states (session only, never a ChatGPT `STATE:` line):
-`INIT`, `PLAN_RECEIVED`, `EXECUTING`, `EXECUTED_LOCAL`, `EXECUTED_SENT`, `DONE`, `BLOCKED`.
+`INIT`, `PLAN_RECEIVED`, `EXECUTING`, `EXECUTED_LOCAL`, `EXECUTED_SENT`,
+`DONE`, `BLOCKED`. For `INIT`, `waitingFor=none` means send/verification is
+pending; `waitingFor=GPT_PLAN` means INIT is confirmed submitted.
 Do not invent `STATE: RESUME`. If the original chat is gone, send HANDOFF.
 All control messages start with `[C2C]`. Keep Codex→ChatGPT messages under 1 KB.
 ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/protocol.md`.
@@ -567,12 +600,21 @@ ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/proto
      it; otherwise HANDOFF and ask ChatGPT to restate the last PLAN. Do not
      treat it as done and do not INIT a new task.
    - `PLAN_RECEIVED`: execute that plan. Do not INIT.
-   - `INIT` / `waitingFor=GPT_PLAN`: claim the tab and wait. Do not resend INIT.
+   - `INIT` + `waitingFor=none`: INIT may be drafted, submitted, or ambiguous.
+     Apply the **Control-message send guard** to the exact task/iteration
+     marker. If a submitted signal is present, set `waitingFor=GPT_PLAN` and
+     wait for PLAN. If the exact draft is proven unsent and the current send
+     control is enabled, allow the guard's single retry. Otherwise keep
+     `waitingFor=none`; do not mint a new task or send a second INIT.
+   - `INIT` + `waitingFor=GPT_PLAN`: claim the tab and wait. Do not resend INIT.
    - `DONE`: summarize to the user if needed; `c2c session set --clear-checkpoint`.
    - `BLOCKED`: surface ChatGPT's reason; do not INIT.
    Never re-pair, never recreate the connector, and never rewrite Project
    instructions just to resume.
-2. Send INIT with the user's goal (skip when the checkpoint says not to):
+2. Send INIT with the user's goal (skip when the checkpoint says not to).
+   Before filling the composer, persist the local pending checkpoint:
+   `c2c session set -w <ws> --task <id> --iteration 0 --state INIT --protocol-state INIT --waiting-for none --goal "<short goal>" --next-step "send or verify INIT"`
+   Then apply the **Control-message send guard** to this message:
 
 ```
 [C2C]
@@ -588,8 +630,10 @@ Inspect the connected workspace through the Codex with ChatGPT MCP connector.
 Produce a C2C PLAN message.
 ```
 
-   Then:
+   Only after a submitted signal is observed, promote the checkpoint:
    `c2c session set -w <ws> --task <id> --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`
+   If the result remains ambiguous, leave `INIT` with `waitingFor=none` and
+   recover through the guard; do not wait as though INIT were known to be sent.
 3. Wait for ChatGPT's `STATE: PLAN` reply (**In-app browser** §8 — short DOM
    checks, same tab; do not treat a 5-minute browser timeout as failure).
    Read GOAL/ACTIONS/TESTS/SUCCESS_CRITERIA.
@@ -637,11 +681,10 @@ If execution_output lists a readable item for this iteration, list then read it.
 If status is restricted, ignore it and review from git_diff.
 ```
 
-   Apply the **Control-message send guard** and verify that the message left
-   the composer and is visible in the conversation before recording it as
-   sent. If the browser call timed out, keep the local checkpoint unchanged
-   until fresh DOM proves sent; do not press Enter or resend on an ambiguous
-   result. Then:
+   Apply the **Control-message send guard** and require one of its submitted
+   signals before recording the message as sent. If the browser call timed
+   out, keep the local checkpoint unchanged until fresh DOM provides that
+   evidence; do not press Enter or resend on an ambiguous result. Then:
    `c2c session set -w <ws> --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`
 7. ChatGPT reviews via MCP (`git_diff`, `read_file`, `test_status`,
    `execution_output`) and replies DONE / PLAN (next iteration) / BLOCKED.
@@ -733,7 +776,7 @@ the previous public address is gone. Doctor already started a new one.
 | Port conflict | handled automatically; never surface to the user |
 | Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
 | cloudflared missing | install it yourself (brew/winget), then retry |
-| Composer keeps a `[C2C]` message while send/Enter times out, or `发送提示` is missing while `停止回答` is visible | Apply the **Control-message send guard**: inspect fresh DOM, use short waits, rebind the same tab after a timeout, and allow at most one retry only when the exact draft is proven unsent. Never duplicate the message or create a new connector/chat. |
+| Composer keeps a `[C2C]` message while send/Enter times out, or `发送提示` is missing while `停止回答` is visible | Apply the **Control-message send guard**: inspect fresh DOM against the pre-send baseline, use short waits, recover only the tab from the existing `iab` binding after a stale-tab error, and allow at most one retry only when the exact draft is proven unsent. Never duplicate the message or create a new connector/chat. |
 | Repeated `No ChatGPT browser route is available` with a healthy `c2c doctor` | This is Codex desktop in-app-browser task-page routing, outside the C2C bridge. Keep the connector; update and fully restart Codex, then test in a new task. If it persists, report it through the app feedback path with the task id. |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
