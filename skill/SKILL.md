@@ -137,8 +137,19 @@ that close the tab, hide the window, or stall on the settings page.
    success / pairing accepted is enough. Confirm tools in the conversation with
    `workspace_info`.
 
-6. **Batch.** Fill a known form in one Playwright / `js` script when you can.
-   After an action, one cheap DOM check. Do not screenshot-poll.
+6. **One browser call, one operation.** A ChatGPT DOM read can itself take
+   about 20 seconds and the outer browser call may reset its JS kernel at
+   roughly 30 seconds. Never combine navigation, fill, click, reload, waiting,
+   URL reads, or DOM reads in one Playwright / `js` call. Each call performs
+   exactly one of those operations and returns immediately. In particular:
+   - composer fill is one call;
+   - send-button click is a separate call;
+   - confirmation is a later, separate DOM-read call;
+   - reload is one call and is never followed by an in-call wait or DOM read.
+   Never use `waitForTimeout`, `waitFor`, sleep, or polling inside a browser
+   `js` call. The known-form batching optimization may still be used on the
+   connector settings form only; it never applies to a ChatGPT composer or
+   send action. Do not screenshot-poll.
 
 7. **One conversation, Chat mode.** The first ChatGPT chat is the C2C
    conversation. Chat and Work (聊天 / 工作) are separate: a Work conversation
@@ -153,8 +164,9 @@ that close the tab, hide the window, or stall on the settings page.
 
 8. **Wait for a ChatGPT reply (do not hold one long browser wait).** After you
    send INIT, EXECUTED, boot, or the workspace_info check: `markHandoff`, keep
-   the tab foreground, and stay in this same task. Do not `waitFor` 5 minutes
-   and do not screenshot-poll. Every 20–30 seconds, one cheap DOM check:
+   the tab foreground, and stay in this same task. Do not `waitFor` in browser
+   JS and do not screenshot-poll. Return from the browser call; every 20–30
+   seconds, make one new DOM-only call:
    - still generating → wait again (do not type, do not resend);
    - `STATE: PLAN` / `DONE` / `BLOCKED` / the verify workspace name → read it
      and continue the existing protocol;
@@ -167,6 +179,9 @@ that close the tab, hide the window, or stall on the settings page.
 
 Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
 
+- Every step below is a separate browser call under **In-app browser** §6.
+  Never append a DOM/URL/generation check to a fill, click, reload, or mark
+  operation, even when doing so appears faster.
 - Before typing or sending, inspect the current same-tab DOM once and retain a
   small baseline: whether the exact control marker already exists, whether the
   composer is empty, and whether an assistant response/`停止回答` control is
@@ -176,17 +191,18 @@ Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
   after the attempted action when it was not active in the baseline. Existing
   generation from an earlier turn is not proof. Do not resend after either
   submitted signal.
-- Fill the existing composer in one action, then run one cheap
-  `dom_cua.get_visible_dom()` check. Use only the current DOM node/locator;
+- Fill the existing composer in one call and return immediately. Confirm the
+  draft with a later DOM-only call. Use only the current DOM node/locator;
   never reuse a node id or locator captured before a timeout.
-- Click the current `发送提示` control once only when it is visible and its
+- Click the current `发送提示` control in one click-only call and return
+  immediately, once only when it is visible and its
   current DOM does not show `aria-disabled="true"`. Do not automatically press
   Enter as a fallback: a timed-out click may already have submitted.
 - If `发送提示` is absent and `停止回答` or a spinner is visible, ChatGPT is
   still generating or the page is in a pending state. Do not type again or
-  click another control. Wait in short browser slices of at most 10 seconds,
-  then take one fresh DOM check. A 20–30 second browser wait can itself hit
-  the browser tool's roughly 30-second boundary.
+  click another control. Return control without an in-browser wait, then make
+  one fresh DOM-only call later. A browser wait plus a DOM read can exceed the
+  browser tool's roughly 30-second boundary.
 - A click, keypress, or browser timeout is inconclusive. Keep the existing
   `iab` browser binding. If the tab binding is stale, discard only that tab
   binding and obtain the same ChatGPT tab again from the existing `iab`
@@ -197,14 +213,21 @@ Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
   Only if a fresh DOM proves the exact draft is still present, no assistant
   response is active, and a current enabled `发送提示` control is visible may
   one retry be made. Do not loop.
+- `js execution timed out; kernel reset` is not a stale-tab error. The reset
+  destroys the in-memory `iab` binding and can also orphan this task's ChatGPT
+  page route. Do not call `setupBrowserRuntime()` / `agent.browsers.get("iab")`
+  again and do not attempt another send in this task. Preserve the pending
+  checkpoint and report the browser-route failure. A new Codex task may claim
+  a newly provided route and resume from that checkpoint.
 - Promote a local checkpoint to its sent state only after observing one of the
   submitted signals above; a successful browser-call return alone is not
   proof. If the state remains ambiguous, keep the local pending phase
   (`INIT` with `waitingFor=none`, or `EXECUTED_LOCAL`) and report the route
   problem rather than sending again.
 - If controls remain stuck, a same-URL reload of that tab is allowed once
-  after `markHandoff()`. After reload, wait in short slices until the current
-  chat history and composer are visibly loaded, then inspect for the exact
+  after a separate `markHandoff()` call. Reload in its own call and return;
+  later inspect in a separate DOM-only call until the current chat history and
+  composer are visibly loaded, then inspect for the exact
   message. Reload can complete a pending send or clear the draft. If it clears
   the draft without producing a submitted signal, keep the state ambiguous and
   do not refill automatically. A retry remains allowed only when a stable fresh
@@ -776,7 +799,8 @@ the previous public address is gone. Doctor already started a new one.
 | Port conflict | handled automatically; never surface to the user |
 | Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
 | cloudflared missing | install it yourself (brew/winget), then retry |
-| Composer keeps a `[C2C]` message while send/Enter times out, or `发送提示` is missing while `停止回答` is visible | Apply the **Control-message send guard**: inspect fresh DOM against the pre-send baseline, use short waits, recover only the tab from the existing `iab` binding after a stale-tab error, and allow at most one retry only when the exact draft is proven unsent. Never duplicate the message or create a new connector/chat. |
+| Composer keeps a `[C2C]` message while send/Enter times out, or `发送提示` is missing while `停止回答` is visible | Apply the **Control-message send guard** with one-operation browser calls: fill, click, and DOM confirmation are three separate calls with no in-browser waits. Recover only the tab from the existing `iab` binding after a stale-tab error, and allow at most one retry only when the exact draft is proven unsent. Never duplicate the message or create a new connector/chat. |
+| `js execution timed out; kernel reset` | Preserve the pending checkpoint. Do not reinitialize `iab` or send again in this task; its ChatGPT page route may have been orphaned. Resume in a new Codex task with the same checkpoint. |
 | Repeated `No ChatGPT browser route is available` with a healthy `c2c doctor` | This is Codex desktop in-app-browser task-page routing, outside the C2C bridge. Keep the connector; update and fully restart Codex, then test in a new task. If it persists, report it through the app feedback path with the task id. |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
