@@ -163,6 +163,42 @@ that close the tab, hide the window, or stall on the settings page.
    standby. If ChatGPT is still thinking, keep polling. Never open a second
    tab and never resend INIT/EXECUTED just because a wait timed out.
 
+### Control-message send guard (same tab, idempotent)
+
+Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
+
+- Before typing or sending, inspect the current same-tab DOM once. After an
+  attempted send, if the exact control text/`TASK_ID` + `ITERATION` marker is
+  already a user message, or the composer is empty and a new assistant
+  response/`停止回答` control is present, treat it as submitted; do not resend.
+- Fill the existing composer in one action, then run one cheap
+  `dom_cua.get_visible_dom()` check. Use only the current DOM node/locator;
+  never reuse a node id or locator captured before a timeout.
+- Click the current `发送提示` control once only when it is visible and its
+  current DOM does not show `aria-disabled="true"`. Do not automatically press
+  Enter as a fallback: a timed-out click may already have submitted.
+- If `发送提示` is absent and `停止回答` or a spinner is visible, ChatGPT is
+  still generating or the page is in a pending state. Do not type again or
+  click another control. Wait in short browser slices of at most 10 seconds,
+  then take one fresh DOM check. A 20–30 second browser wait can itself hit
+  the browser tool's roughly 30-second boundary.
+- A click, keypress, or browser timeout is inconclusive. Rebind the same
+  browser, relist tabs, retrieve the current tab, mark it for handoff, and
+  inspect fresh DOM. If the exact message is now in the conversation or the
+  composer has cleared with an assistant response active, treat it as sent.
+  Only if a fresh DOM proves the exact draft is still present, no assistant
+  response is active, and a current enabled `发送提示` control is visible may
+  one retry be made. Do not loop.
+- Set `EXECUTED_SENT` only after observing that the message left the composer
+  and entered the conversation; a successful browser-call return alone is
+  not proof. If the state remains ambiguous, keep `EXECUTED_LOCAL` and report
+  the route problem rather than sending again.
+- If controls remain stuck, a same-URL reload of that tab is allowed once
+  after `markHandoff()`. After reload, inspect the conversation for the exact
+  message before refilling the composer: reload can complete a pending send
+  or clear the draft. Do not create a new chat or repair the connector for
+  this symptom when `c2c doctor` is healthy.
+
 ## Locations
 
 - The codex-with-chatgpt checkout lives at: `<ACTUAL_CHECKOUT_PATH>`
@@ -523,8 +559,10 @@ ChatGPT's replies are expected to be substantive (see step 3). Docs: `docs/proto
    - `EXECUTED_SENT` + `waitingFor=GPT_REVIEW`: do not INIT, do not re-run,
      do not resend EXECUTED. Stay on the saved chat and wait for review. If
      that chat 404s: HANDOFF from checkpoint fields (no logs), then wait.
-   - `EXECUTED_LOCAL`: local work is done; only send EXECUTED (record first
-     if this iteration has no record yet). Do not re-run.
+   - `EXECUTED_LOCAL`: local work is done; before sending, apply the
+     **Control-message send guard** and inspect the current chat for the exact
+     task/iteration marker. Only send EXECUTED if it is not already present
+     (record first if this iteration has no record yet). Do not re-run.
    - `EXECUTING`: not finished. Continue the current PLAN if you still have
      it; otherwise HANDOFF and ask ChatGPT to restate the last PLAN. Do not
      treat it as done and do not INIT a new task.
@@ -599,7 +637,11 @@ If execution_output lists a readable item for this iteration, list then read it.
 If status is restricted, ignore it and review from git_diff.
 ```
 
-   Then:
+   Apply the **Control-message send guard** and verify that the message left
+   the composer and is visible in the conversation before recording it as
+   sent. If the browser call timed out, keep the local checkpoint unchanged
+   until fresh DOM proves sent; do not press Enter or resend on an ambiguous
+   result. Then:
    `c2c session set -w <ws> --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`
 7. ChatGPT reviews via MCP (`git_diff`, `read_file`, `test_status`,
    `execution_output`) and replies DONE / PLAN (next iteration) / BLOCKED.
@@ -691,5 +733,7 @@ the previous public address is gone. Doctor already started a new one.
 | Port conflict | handled automatically; never surface to the user |
 | Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
 | cloudflared missing | install it yourself (brew/winget), then retry |
+| Composer keeps a `[C2C]` message while send/Enter times out, or `发送提示` is missing while `停止回答` is visible | Apply the **Control-message send guard**: inspect fresh DOM, use short waits, rebind the same tab after a timeout, and allow at most one retry only when the exact draft is proven unsent. Never duplicate the message or create a new connector/chat. |
+| Repeated `No ChatGPT browser route is available` with a healthy `c2c doctor` | This is Codex desktop in-app-browser task-page routing, outside the C2C bridge. Keep the connector; update and fully restart Codex, then test in a new task. If it persists, report it through the app feedback path with the task id. |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |
