@@ -11,6 +11,51 @@ can (restarts the bridge, restarts the tunnel) without asking.
 
 ## Common situations
 
+### Repeated doctor checks forget an unfinished ChatGPT reconnect
+
+The local endpoint and the address configured in ChatGPT are now stored
+separately. A new address remains pending across repeated doctor/start calls.
+After completing ChatGPT setup, tell Codex that it is done. Codex records the
+exact configured Server URL with `c2c connector-confirm -w <workspace> --url
+<Server URL> --json`, then checks local health and ChatGPT access separately.
+An outdated URL is rejected. Do not use confirmation to suppress a warning
+without actually completing setup.
+
+Repeated doctor checks do not replace an active pairing code. If it expires
+or is lost, `c2c pair -w <workspace> --json` explicitly generates a fresh one.
+`doctor --no-fix` does not write the endpoint or generate pairing codes.
+Manual mode messages leave the settings operations to the user.
+
+Legacy endpoint files use their last saved address as the migration baseline.
+If an older release already overwrote an unconfirmed address, the lost history
+cannot be reconstructed automatically; verify ChatGPT access and repair that
+connection if needed. Existing healthy connections are not forcibly recreated.
+
+### ChatGPT page reads reset the browser kernel, but doctor is healthy
+
+Doctor checks the local connection, not desktop page automation. Use the API
+advertised by the current browser tool. With `mcp__cua_repl.js`, set the outer
+tool argument `timeout_ms: 60000` and keep each action/read in a separate call.
+In an isolated Windows test, default 30-second calls reset the kernel, whereas
+claiming the same tab succeeded in 55 seconds and AX/screenshot reads in about
+42 seconds. `getTab`/`createBrowserTab` implicitly read initial state: opening
+may have succeeded even when the call times out. Rediscover before creating.
+
+A kernel reset discards every JS handle. Reacquire the same tab from fresh
+inventory. Use the Skill's bounded send guard; never infer an unsent message
+from an empty composer after a send attempt. Screenshot fallback also needs
+the longer outer budget. Do not assume an old `tab.cua` API is available.
+
+`No ChatGPT browser route is available` in current-task desktop logs identifies
+a desktop route problem; it may coexist with slow successful operations.
+The budget change is a verified workaround for the tested path, not a fix to
+Codex desktop internals. If bounded recovery fails, preserve the checkpoint and
+report the exact blocked operation. Do not recreate a healthy connector.
+
+For diagnostic-only requests, use a temporary chat outside the Project and
+harmless unique markers, without saving over the workspace session or resuming
+its unfinished task. See [isolated test evidence](c2c-browser-diagnostic-2026-09-05.md).
+
 ### "Bridge 未运行"
 `c2c start` (or let doctor do it). Bridge logs:
 `c2c logs`, or verbose: `c2c logs --verbose`.

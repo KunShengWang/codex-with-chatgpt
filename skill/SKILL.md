@@ -48,9 +48,10 @@ whatever data it needs by itself.
    on reconnect or a second repo. A new computer (empty prefs) asks/checks
    once.
 5. ALWAYS keep ChatGPT in the built-in in-app browser (iab).
-   Follow **In-app browser (ChatGPT)** below. If DOM/Playwright composer or Send
-   control times out, use that same iab tab's screenshot-coordinate `tab.cua`
-   fallback. Never use Windows-level Computer Use or another browser. NEVER
+   Follow **In-app browser (ChatGPT)** below. If DOM/AX composer or Send
+   control times out, use the same tab's documented screenshot/coordinate
+   fallback only after checking submission evidence. Never use Windows-level
+   Computer Use or another browser. NEVER
    launch or control a third-party/external browser
    (Chrome, Safari, Edge…), and never use `open <url>` to hand off to one.
    - The ONLY exception: the user explicitly says the Cloudflare login must use
@@ -98,21 +99,33 @@ whatever data it needs by itself.
 
 ## In-app browser (ChatGPT)
 
-Official skill: `control-in-app-browser`. These C2C rules override defaults
-that close the tab, hide the window, or stall on the settings page.
+Use the browser tools and API documentation actually available in this session.
+Do not assume an unlisted `control-in-app-browser` skill, bootstrap function,
+or `tab.cua` API exists. The current `mcp__cua_repl.js` entry point uses `cua`.
 
-1. **Surface.** Once per Codex session: `setupBrowserRuntime()`, then
-   `const iab = await agent.browsers.get("iab")`. Reuse `iab`. Do not re-read
-   `documentation()` if it is already bound. Never `getDefault()`, `getForUrl()`,
-   or a different browser surface.
+1. **Surface and API.** With `mcp__cua_repl.js`, start with exactly one documented
+   entry call, normally `await cua.getState()`. Select the browser of type `iab`
+   belonging to this task, and retain its returned browser ID. Claim an existing
+   matching tab with `cua.getTab(tabId, { browser: browserId })`; if none exists,
+   use `cua.createBrowserTab("iab", allowedUrl, { visible: true })` once.
+   Read the returned documentation before further operations. Use `getAXState`,
+   `setValue`, `click`, and `getScreenshot` from that API; coordinate clicks use
+   `tab.click([x, y])`. Only use a legacy runtime if its tool is actually exposed
+   and its own bootstrap/API documentation has been read. Never mix APIs or
+   guess methods from an older skill version.
 
-2. **One tab.** Create the ChatGPT tab once (`tabs.new()`). After that, only
-   `tab.goto(...)` to switch URLs. If the tab still exists, claim it — never
-   open a second ChatGPT tab. Do not `goto` the URL you are already on.
+2. **One tab.** After creation, use `tab.goto(...)` to switch allowed URLs.
+   Creation can open the tab and then time out while reading initial state.
+   Rediscover tabs before attempting creation again. Do not `goto` the URL you
+   are already on. After a kernel reset, all JavaScript bindings are gone:
+   repeat a documented entry call, rediscover the same iab tab and bind it again.
+   After an ordinary error without reset, retain surviving bindings and replace
+   only stale handles. Tab IDs must come from fresh inventory after reset.
 
 3. **Foreground + keep (standby).** Right after opening or claiming the tab:
-   - `await (await iab.capabilities.get("visibility")).set(true)` — first-time
-     setup and ChatGPT chatting stay in front of the user so they can watch.
+   - Keep the tab visible using the selected API's documented visibility option;
+     `cua.createBrowserTab` accepts `{ visible: true }`. Use legacy capabilities
+     only if documented for the selected handle.
    - `await tab.markHandoff()` immediately, then again at the start and end of
      every turn. After setup succeeds or the C2C chat is open, also
      `await tab.markDeliverable()`.
@@ -139,15 +152,21 @@ that close the tab, hide the window, or stall on the settings page.
    success / pairing accepted is enough. Confirm tools in the conversation with
    `workspace_info`.
 
-6. **One browser call, one operation.** A ChatGPT DOM read can itself take
-   about 20 seconds and the outer browser call may reset its JS kernel at
-   roughly 30 seconds. Never combine navigation, fill, click, reload, waiting,
-   URL reads, or DOM reads in one Playwright / `js` call. Each call performs
-   exactly one of those operations and returns immediately. In particular:
+6. **One browser call, one operation, sufficient outer budget.** For ChatGPT
+   calls through `mcp__cua_repl.js`, set the tool argument `timeout_ms: 60000`.
+   Real IAB observations have taken about 42 seconds, and a tab claim about
+   55 seconds; the default 30-second outer limit resets the kernel before they
+   finish. This is a bounded workaround, not a repair of desktop routing.
+   Never combine navigation, fill, click, reload, waiting, URL reads, or page
+   reads in one call. In particular:
    - composer fill is one call;
    - send-button click is a separate call;
-   - confirmation is a later, separate DOM-read call;
-   - reload is one call and is never followed by an in-call wait or DOM read.
+   - confirmation is a later, separate AX/DOM-read call;
+   - reload is one call and is never followed by an in-call wait or page read.
+   `getTab` and `createBrowserTab` may implicitly read initial state; do not
+   append another observation. Use the fresh tree's disabled/enabled evidence
+   for Send; do not add `isEnabled()`/`getAttribute()` round trips just to repeat
+   a state check. Match the current label, e.g. `发送提示词`, not a fixed old label.
    Never use `waitForTimeout`, `waitFor`, sleep, or polling inside a browser
    `js` call. The known-form batching optimization may still be used on the
    connector settings form only; it never applies to a ChatGPT composer or
@@ -167,78 +186,82 @@ that close the tab, hide the window, or stall on the settings page.
 8. **Wait for a ChatGPT reply (do not hold one long browser wait).** After you
    send INIT, EXECUTED, boot, or the workspace_info check: `markHandoff`, keep
    the tab foreground, and stay in this same task. Do not `waitFor` in browser
-   JS and do not screenshot-poll. Return from the browser call; every 20–30
-   seconds, make one new DOM-only call:
+   JS and do not screenshot-poll. Return from the browser call; while waiting
+   for generation, make separate AX/DOM observations about 20–30 seconds apart.
+   If the read already took longer than that, no extra delay is needed:
    - still generating → wait again (do not type, do not resend);
    - `STATE: PLAN` / `DONE` / `BLOCKED` / the verify workspace name → read it
      and continue the existing protocol;
    - visible error → repair; do not start a new chat.
-   A browser/js timeout is not failure. Claim the same tab, read the page, keep
-   standby. If ChatGPT is still thinking, keep polling. Never open a second
-   tab and never resend INIT/EXECUTED just because a wait timed out.
+   A browser/js timeout is an unknown result, not proof of submission or failure.
+   Apply the bounded recovery below. Poll again only after a successful read
+   shows generation; do not repeatedly poll a broken read path. Never open a
+   second tab or resend INIT/EXECUTED just because a wait timed out.
 
 ### Control-message send guard (same tab, idempotent)
 
 Use this guard for boot, INIT, HANDOFF, EXECUTED, and workspace_info messages.
+Each browser action or observation is a separate call with the budget in §6.
 
-- Every step below is a separate browser call under **In-app browser** §6.
-  Never append a DOM/URL/generation check to a fill, click, reload, or mark
-  operation, even when doing so appears faster.
-- Before typing or sending, inspect the current same-tab DOM once and retain a
-  small baseline: whether the exact control marker already exists, whether the
-  composer is empty, and whether an assistant response/`停止回答` control is
-  already active. After an attempted send, treat it as submitted only when
-  either (a) the exact control text/`TASK_ID` + `ITERATION` marker is now a user
-  message, or (b) the composer cleared and assistant generation became active
-  after the attempted action when it was not active in the baseline. Existing
-  generation from an earlier turn is not proof. Do not resend after either
-  submitted signal.
-- Fill the existing composer in one call and return immediately. Confirm the
-  draft with a later DOM-only call. Use only the current DOM node/locator;
-  never reuse a node id or locator captured before a timeout.
-- Click the current `发送提示` control in one click-only call and return
-  immediately, once only when it is visible and its
-  current DOM does not show `aria-disabled="true"`. Do not automatically press
-  Enter as a fallback: a timed-out click may already have submitted.
-- If `发送提示` is absent and `停止回答` or a spinner is visible, ChatGPT is
-  still generating or the page is in a pending state. Do not type again or
-  click another control. Return control without an in-browser wait, then make
-  one fresh DOM-only call later. A browser wait plus a DOM read can exceed the
-  browser tool's roughly 30-second boundary.
-- A click, keypress, or browser timeout is inconclusive. Keep the existing
-  `iab` browser binding. If the tab binding is stale, discard only that tab
-  binding and obtain the same ChatGPT tab again from the existing `iab`
-  binding; do not call `agent.browsers.get*` unless the browser explicitly
-  reports that it disconnected. Mark the recovered tab for handoff and inspect
-  fresh DOM against the pre-send baseline. If either submitted signal above is
-  now present, treat it as sent.
-  Only if fresh evidence proves the exact draft is still present, no assistant
-  response is active, and a current enabled `发送提示` control is visible may
-  one retry be made. Make that retry with a fresh screenshot and one
-  `tab.cua.click` on Send, not through the timed-out DOM/Playwright path.
-- If fresh evidence shows all three conditions — the exact marker is absent
-  from chat history, no assistant generation is active, and the composer is
-  empty — the message is **proven unsent**, not ambiguous. Keep the same
-  checkpoint; use `tab.cua` to focus/type once and mouse-click Send. Do not stop
-  merely because a previous browser fill disappeared or a reload cleared it.
-- `js execution timed out; kernel reset` is not a reason to abandon the task.
-  Preserve the pending checkpoint, recover/claim the same visible iab tab, and
-  use `tab.cua`; never reuse the failed DOM locator or create another chat.
-- Promote a local checkpoint to its sent state only after observing one of the
-  submitted signals above; a successful browser-call return alone is not
-  proof. If the state remains ambiguous, keep the local pending phase
-  (`INIT` with `waitingFor=none`, or `EXECUTED_LOCAL`) and report the route
-  problem rather than sending again.
-- If controls remain stuck, a same-URL reload of that tab is allowed once
-  after a separate `markHandoff()` call. Reload in its own call and return;
-  later inspect in a separate DOM-only call until the current chat history and
-  composer are visibly loaded, then inspect for the exact
-  message. Reload can complete a pending send or clear the draft. If it clears
-  the draft without producing a submitted signal, keep the state ambiguous and
-  do not refill automatically. A retry remains allowed only when a stable fresh
-  DOM still contains the exact draft and satisfies the one-retry rule above.
-  Do not create a new chat or repair the connector for this symptom when
-  `c2c doctor` is healthy.
+1. Before typing, retain a small baseline outside browser JS memory: tab URL/ID,
+   exact message and marker (STATE + TASK_ID + ITERATION), whether that marker
+   appears in a user message, draft content, and generation state. A substring
+   in an assistant quote or a previous protocol phase is not submission proof.
+   Keep the normal local checkpoint pending before attempting a send.
+2. If that exact message is already submitted, wait/read the reply. If another
+   response is generating or an unrelated draft exists, do not overwrite it.
+   Otherwise fill once, then inspect a fresh AX/DOM tree in a separate call.
+3. Click the current enabled Send control once, using fresh element evidence.
+   Do not press Enter after an uncertain click. Confirm submission with either
+   (a) the exact phase/task/iteration message in user history, or (b) the draft
+   clearing AND new assistant generation starting after the send attempt when
+   generation was absent in the baseline. A successful tool return is not proof.
+4. If a timeout occurs, keep the pending checkpoint. A kernel reset destroys
+   all JS bindings; rediscover and claim the same tab as in §2. Do not reuse
+   stale element IDs. Allow one recovery pass: one fresh observation, with the
+   60-second budget, and at most one screenshot fallback if AX/DOM cannot read.
+   Use the current API's `getScreenshot()` / `click([x, y])`, not an assumed
+   `tab.cua` method. If claim itself still fails, there is no valid tab handle
+   for a screenshot: report that boundary instead of inventing another route.
+5. After recovery, if submitted, do not resend. Only if stable fresh evidence
+   shows the exact draft still present, no generation, the exact user message
+   absent, and an enabled Send control may one click retry occur. Use a fresh
+   screenshot for a coordinate retry after a failed semantic action. Verify
+   again after that retry; never retry a second time.
+6. An empty composer and absent marker after any attempted send or reload is
+   **ambiguous**, even when no generation is visible: a reply may have finished
+   or history may be incomplete. Do not refill automatically. If no submission
+   action was ever attempted and a failed fill left a verified empty composer,
+   it is safe to refill once after confirming the correct page and no generation.
+7. A same-tab reload is allowed once when controls are stuck, after a separate
+   markHandoff call. Read the loaded page separately; apply the same evidence
+   rules. Reload never turns an ambiguous send into a proven-unsent message.
+8. If the recovery read/screenshot still times out or the result stays ambiguous,
+   stop browser retries, preserve pending state (`INIT` + `waitingFor=none`, or
+   `EXECUTED_LOCAL`), and tell the user which operation could not be confirmed.
+   A healthy doctor does not establish browser health. Do not rebuild the
+   connector, restart the bridge, or create a new chat for this symptom.
+   Inspect desktop logs for current-task route errors; report them as a host
+   limitation, not as fixed by this skill. Resume recovery only after new
+   evidence or an external-state change. Do not turn transport failure into
+   an endless generation polling loop.
+
+### Isolated browser diagnostics
+
+When the user asks to test C2C without advancing unfinished work, this section
+replaces the coding workflow and normal Project chat boot/resume steps.
+
+- Read the saved session for preservation only; do not resume its checkpoint,
+  run project tests, send its INIT/EXECUTED/HANDOFF, call its workspace tools,
+  write execution records, or save a diagnostic URL over the existing session.
+- Use an isolated chat outside the Project. Opening `https://chatgpt.com/` is
+  allowed for this diagnostic scope; select the visible temporary-chat control
+  when available. Never navigate or type in the unfinished task's chat.
+- Send a unique harmless marker, explicitly asking for a fixed reply and no
+  tools/project work. Verify draft, enabled Send, user history, returned marker,
+  and cleared composer. A local doctor pass alone is not end-to-end success.
+- Record measured timings, fallback used, and limits in the C2C checkout's
+  diagnostic report. Do not use `c2c record` or `session set` for this test.
 
 ## Locations
 
@@ -324,6 +347,17 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
    the C2C state directory.
 
 ## Workflow: first-time setup（"使用 Codex with ChatGPT 完成首次配置"）
+
+**Connector completion record (setup and every reconnect):** The CLI stores
+the observed address separately from the address configured in ChatGPT. After
+the user reports completing configuration in manual mode, or after observing
+Connected/authorization success in auto mode, run
+`c2c connector-confirm -w <ws> --url <exact mcpUrl just configured> --json`.
+Then run doctor again and verify ChatGPT access separately. This command only
+records configuration completion; it is not evidence of successful file reads.
+Never run it just to clear a doctor warning or because local health is green.
+If the URL changed while the user was configuring it, the command rejects the
+old URL: provide the new information and wait for completion again.
 
 1. Detect prerequisites yourself: `node --version` (>= 20), and check `cloudflared`.
    - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
@@ -411,6 +445,25 @@ Stop automating ChatGPT settings. Keep the current local C2C state and the
 current `mcpUrl`, `pairingCode`, `workspaceName`, and `connectorName`. Do not
 silently fall back to Codex-only execution and do not permanently disable C2C.
 Do not change the saved `setupMode` when this is a failure fallback.
+
+For a returning user in saved manual mode, including the first C2C use after
+restarting Codex, perform local connection checks but leave ALL ChatGPT
+connector settings actions to the user. If setup/re-pairing is needed, present
+the current connector name, create/manage page links, Server URL, Authentication
+(`OAuth`), description, and fresh pairing code with its expiry together in one
+copyable message. Obtain missing/expired codes with `c2c pair -w <ws> --json`.
+Do not click Delete/Create/Connect/Authorize or type the code on their behalf.
+Wait for the user to report completion before verification or task messages.
+Then record completion with `connector-confirm` as described above, before the
+follow-up doctor. Repeated doctor calls keep repair pending until this record
+exists. If `pairingActive: true` but no new code is returned, reuse the code
+already handed to the user; doctor intentionally does not invalidate it.
+Only request a fresh `pair` code if it expired, was lost, or the user asks.
+This returning-user handoff replaces the one-action-at-a-time tutorial below;
+use that tutorial only when they need step-by-step help. If the existing
+connection is healthy and no repair is needed, reuse it without forced deletion
+or a new pairing code. Manual setup does not disable normal chat collaboration
+after connection succeeds. Never reinstall the local C2C software for this flow.
 
 Opening line:
 
@@ -663,7 +716,7 @@ Produce a C2C PLAN message.
    If the result remains ambiguous, leave `INIT` with `waitingFor=none` and
    recover through the guard; do not wait as though INIT were known to be sent.
 3. Wait for ChatGPT's `STATE: PLAN` reply (**In-app browser** §8 — short DOM
-   checks, same tab; do not treat a 5-minute browser timeout as failure).
+   checks, same tab; apply bounded recovery if the read itself fails).
    Read GOAL/ACTIONS/TESTS/SUCCESS_CRITERIA.
    A good PLAN also carries RATIONALE and concrete natural-language edit
    suggestions (which file, what to change, why). If the reply is a bare
@@ -741,12 +794,13 @@ the previous public address is gone. Doctor already started a new one.
 `c2c doctor --json` will look like:
 `{ "chatgptRepair": { "needed": true, "connectorAction": "update", "connectorName": "...", "userMessage": "...", "mcpUrl": "...", "pairingCode": "...", "pages": { ... } } }`
 
-1. Tell the user exactly `chatgptRepair.userMessage`. Then you repair. Do not
-   ask them to click around ChatGPT unless a login wall appears. Do not open
-   the C2C chat and do not send `[C2C]` until this repair finishes and a
-   follow-up doctor is green. Never "try a message first to see if it works".
-   Reuse `c2c prefs --json`. Do not re-ask setup mode. If `setupMode` is
-   `manual`, use **Guided manual ChatGPT setup** (chosen) instead of automating.
+1. Read `c2c prefs --json` before any settings action. Do not re-ask setup mode.
+   If `setupMode` is `manual`, provide the returning-user information/code
+   handoff in **Guided manual ChatGPT setup**, then wait. Do not execute the
+   automatic settings steps 2–3 below. In auto mode, explain the address change
+   and perform steps 2–3. Do not open the C2C chat or send `[C2C]` until repair
+   finishes and a follow-up doctor is green. Never send a task message as a
+   speculative connection test.
 2. Same one iab tab as setup (foreground + markHandoff). Settings URLs only
    until Connected — never hunt menus:
    - 开发人员模式: skip `https://chatgpt.com/#settings/Security` when
@@ -769,7 +823,8 @@ the previous public address is gone. Doctor already started a new one.
      (or `c2c pair --json` if it expired). Continue as soon as it is Connected —
      do not wait for 8 tools on the settings page.
    - If the name is already gone, skip Delete and only create.
-4. `c2c doctor --json` again. Same tab: only after the Doctor gate is green,
+4. Record actual configuration completion with `connector-confirm` (see
+   first-time setup), then `c2c doctor --json` again. Same tab: only after the Doctor gate is green,
    reopen the chat this Codex thread was already using (`session.url` /
    the URL you saved earlier in THIS thread). Do not start a new
    audit/task chat just because the address changed. Do not rewrite Project
@@ -804,8 +859,8 @@ the previous public address is gone. Doctor already started a new one.
 | Port conflict | handled automatically; never surface to the user |
 | Every new chat “repairs” / cannot write the log or settings directory | `c2c sandbox-allow --json` (once). Do not ask the user. |
 | cloudflared missing | install it yourself (brew/winget), then retry |
-| Composer keeps a `[C2C]` message while browser click times out, or the browser fill disappears | Apply the send guard. If submitted, wait. If the exact draft remains, use the same iab tab's `tab.cua.click` on Send. If marker absent + no generation + composer empty, use `tab.cua` to type once and click Send. Never create a new connector/chat. |
-| `js execution timed out; kernel reset` | Preserve the pending checkpoint, recover/claim the same visible iab tab, and use `tab.cua` rather than the failed DOM/Playwright path. |
-| Repeated `No ChatGPT browser route is available` with a healthy `c2c doctor` | This is Codex desktop in-app-browser task-page routing, outside the C2C bridge. Keep the connector; update and fully restart Codex, then test in a new task. If it persists, report it through the app feedback path with the task id. |
+| Composer keeps a `[C2C]` message while browser click times out, or the browser fill disappears | Apply the send guard. If submitted, wait. If the exact draft remains, use the guard's single verified retry. Empty composer after an attempted send is ambiguous; do not refill. Never create a new connector/chat. |
+| `js execution timed out; kernel reset` | Use the 60-second outer budget; rediscover all handles after reset and apply the bounded send guard. Screenshot fallback must use the current documented API. |
+| Repeated `No ChatGPT browser route is available` with a healthy `c2c doctor` | This is a desktop routing signal, outside the C2C bridge. Try the bounded current-API recovery first; errors can coexist with successful slow page actions. If still blocked, preserve the connector and report the operation/task id. An app update/restart is a possible next step, not a verified cure; do not interrupt other running tasks automatically. |
 | Sidebar has no「项目」 | Ask the user to hover「聊天」, click the …, choose「按项目整理」 |
 | Collection page is the wrong Project | Ask the user to open the named collection and say「已找到」, or accept long-chat |

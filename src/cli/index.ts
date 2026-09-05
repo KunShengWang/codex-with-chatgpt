@@ -33,6 +33,8 @@ import {
   CHATGPT_DEVELOPER_MODE_URL,
   CHATGPT_PLUGINS_URL,
   connectorAction,
+  confirmedEndpointUrl,
+  confirmEndpoint,
   connectorNameFor,
   mcpUrlFromPublic,
   normalizePublicUrl,
@@ -308,7 +310,9 @@ program
       say(`配对码：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分钟内有效）`);
       say("");
       say("下一步：在 ChatGPT 的连接器设置中添加以上地址（OAuth），并在授权页输入配对码。");
-      say("如果你在使用 Codex Skill，这一步会自动完成。");
+      say(readUiPrefs().setupMode === "auto"
+        ? "当前为自动配置模式，由 Codex Skill 完成页面设置。"
+        : "页面设置由你手动完成；完成后告诉 Codex「好了」。");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -491,6 +495,10 @@ program
       previousMcpUrl: string | null;
       pairingCode?: string;
       pairingExpiresAt?: number;
+      setupMode: SetupMode | null;
+      authentication: "OAuth";
+      description: string;
+      pairingActive?: boolean;
       pages: {
         developerMode: string;
         plugins: string;
@@ -500,6 +508,9 @@ program
       needed: false,
       connectorAction: "none",
       connectorName,
+      setupMode: readUiPrefs().setupMode,
+      authentication: "OAuth",
+      description: "Securely connect ChatGPT to the current Codex workspace for planning and review.",
       mcpUrl: lastEndpoint?.mcpUrl ?? null,
       previousMcpUrl: lastEndpoint?.mcpUrl ?? null,
       pages: {
@@ -559,8 +570,8 @@ program
       if (currentUrl && healthy) {
         report.tunnel = { ok: true, detail: currentUrl };
         const nextMcp = mcpUrlFromPublic(currentUrl);
-        const action = connectorAction(lastEndpoint?.mcpUrl, nextMcp);
-        const boundName = nextMcp
+        const action = connectorAction(confirmedEndpointUrl(lastEndpoint), nextMcp);
+        const boundName = nextMcp && opts.fix
           ? persistWorkspaceEndpoint({
               workspaceId: info.workspaceId,
               workspaceName: info.workspaceName,
@@ -572,19 +583,21 @@ program
           : connectorName;
         chatgptRepair = {
           ...chatgptRepair,
-          needed: action === "update",
+          needed: action !== "none",
           reason: action === "update" ? "address_reclaimed" : undefined,
           connectorAction: action,
           connectorName: boundName,
-          userMessage: action === "update" ? reclaimUserMessage(boundName) : undefined,
+          userMessage: action !== "none" ? reclaimUserMessage(boundName, readUiPrefs().setupMode) : undefined,
           mcpUrl: nextMcp,
-          previousMcpUrl: lastEndpoint?.mcpUrl ?? null,
+          previousMcpUrl: confirmedEndpointUrl(lastEndpoint),
+          pairingActive: info.pairingActive,
         };
-        if (action === "update") {
+        if (opts.fix && action !== "none" && !info.pairingActive) {
           try {
             const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
             chatgptRepair.pairingCode = pairing.code;
             chatgptRepair.pairingExpiresAt = pairing.expiresAt;
+            chatgptRepair.pairingActive = true;
             results.push(`已生成新的配对码，需要更新「${boundName}」`);
           } catch (error) {
             report.oauth = { ok: false, detail: (error as Error).message };
@@ -601,7 +614,7 @@ program
           reason: "address_reclaimed",
           connectorAction: "update",
           connectorName,
-          userMessage: reclaimUserMessage(connectorName),
+          userMessage: reclaimUserMessage(connectorName, readUiPrefs().setupMode),
           mcpUrl: null,
         };
       } else if (!currentUrl) {
@@ -622,7 +635,7 @@ program
         reason: "address_reclaimed",
         connectorAction: "update",
         connectorName,
-        userMessage: reclaimUserMessage(connectorName),
+        userMessage: reclaimUserMessage(connectorName, readUiPrefs().setupMode),
       };
     }
 
@@ -666,7 +679,7 @@ program
       allOk && !chatgptRepair.needed && !namedRepair.needed
         ? "Everything looks good."
         : chatgptRepair.needed
-          ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
+          ? "还需要完成并确认 ChatGPT 连接配置；本地健康不代表页面配置已完成。"
           : namedRepair.needed
             ? "固定域名还没连上，需要先登录 Cloudflare。"
             : "仍有问题未解决，可尝试 `c2c restart --tunnel`。"
@@ -675,6 +688,23 @@ program
   });
 
 // ---------------------------------------------------------------- pair / unpair
+
+program
+  .command("connector-confirm")
+  .description("Record the user's completed ChatGPT connector setup (not a connectivity test)")
+  .option("-w, --workspace <path>")
+  .requiredOption("--url <url>", "exact Server URL the user just configured")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; url: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const endpoint = confirmEndpoint(workspace.id, opts.url);
+      if (opts.json) say(JSON.stringify({ ok: true, confirmedMcpUrl: endpoint.confirmedMcpUrl }));
+      else check("已记录你完成的连接配置；仍需单独验证 ChatGPT 文件读取。");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
 
 program
   .command("pair")

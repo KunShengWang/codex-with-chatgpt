@@ -14,6 +14,8 @@ export interface LastEndpoint {
   publicUrl: string | null;
   mcpUrl: string | null;
   connectorName?: string;
+  /** Last address the user explicitly confirmed configuring in ChatGPT. */
+  confirmedMcpUrl?: string | null;
   savedAt: string;
 }
 
@@ -26,9 +28,29 @@ export function readLastEndpoint(workspaceId: string): LastEndpoint | null {
 }
 
 export function writeLastEndpoint(endpoint: Omit<LastEndpoint, "savedAt">): LastEndpoint {
-  const saved: LastEndpoint = { ...endpoint, savedAt: new Date().toISOString() };
+  const previous = readLastEndpoint(endpoint.workspaceId);
+  const saved: LastEndpoint = {
+    ...endpoint,
+    confirmedMcpUrl: endpoint.confirmedMcpUrl !== undefined
+      ? endpoint.confirmedMcpUrl
+      : confirmedEndpointUrl(previous),
+    savedAt: new Date().toISOString(),
+  };
   writeSecureJson(endpointFile(saved.workspaceId), saved);
   return saved;
+}
+
+/** Legacy records lack separate confirmation; retain their previous baseline. */
+export function confirmedEndpointUrl(endpoint: LastEndpoint | null): string | null {
+  return endpoint?.confirmedMcpUrl !== undefined ? endpoint.confirmedMcpUrl : endpoint?.mcpUrl ?? null;
+}
+
+export function confirmEndpoint(workspaceId: string, expectedMcpUrl: string): LastEndpoint {
+  const current = readLastEndpoint(workspaceId);
+  if (!current?.mcpUrl || normalizePublicUrl(current.mcpUrl) !== normalizePublicUrl(expectedMcpUrl)) {
+    throw new Error("Connection address changed or is missing; check the current address before confirming.");
+  }
+  return writeLastEndpoint({ ...current, confirmedMcpUrl: current.mcpUrl });
 }
 
 export function normalizePublicUrl(url: string): string {
@@ -75,6 +97,9 @@ export function connectorNameFor(opts: {
   return `${DEFAULT_CONNECTOR_NAME} · ${sanitizeConnectorLabel(opts.workspaceName, opts.workspaceId)}`;
 }
 
-export function reclaimUserMessage(connectorName: string): string {
+export function reclaimUserMessage(connectorName: string, setupMode?: string | null): string {
+  if (setupMode !== "auto") {
+    return `当前项目需要在 ChatGPT 中确认连接配置。我会提供「${connectorName}」的连接信息和配对码，由你手动完成，完成后告诉我「好了」。`;
+  }
   return `当前项目的安全连接地址已经失效。我会删除「${connectorName}」再按新地址加回去，其它项目的连接不动。请稍等。`;
 }
